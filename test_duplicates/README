@@ -1,0 +1,14 @@
+Something wierd is going on where the met branches are made even though I moved everything out of the way.
+Vince fixed it by just cp'ing ScanTest.cc, ScanTest.h, doAllTest.C, txt_to_tree.sh, and the desired formatted_met_corrections file to a fresh dir.
+
+
+Process all should make the txt files, merge them, format it, and move it all to the unmerged dir.
+txt_to_tree should read in the formatted file and create a tree
+
+OR USE THESE BASH COMMANDS
+
+       cwelke@uaf-7 ~/ianD_ntuplechecks/duplics$ cat formatted_met_corrections.txt > formatted_met_corrections_combined.txt
+[1817] cwelke@uaf-7 ~/ianD_ntuplechecks/duplics$ cat formatted_met_corrections_1.txt >> formatted_met_corrections_combined.txt
+[1817] cwelke@uaf-7 ~/ianD_ntuplechecks/duplics$ cat formatted_met_corrections_combined.txt | wc
+1852166 5556498 34679691
+[1817] cwelke@uaf-7 ~/ianD_ntuplechecks/duplics$ cat formatted_met_corrections_combined.txt | sort | uniq | wc
