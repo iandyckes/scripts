@@ -1,0 +1,32 @@
+Purpose: To estimate the WZ background to the SS analysis.
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+hyp_class = 3 requires two tight SS leptons.  There is also a veto if there is a third lepton forming an OSSF pair on the Z mass with either of the two SS leptons.  I think this third lepton has to be a denom (FO), but I'm not sure.  Check SSSelections in CORE.  I think the "lep_3" variavles in this case are for the lepton with the 3rd highest pT, not necessarily the lepton that causes the veto!!!
+
+hyp_class = 6 requires two tight SS leptons, but the third lepton veto is inverted.  You require a third lepton forming an OSSF pair on the Z mass with one of the two SS leptons.  I think this lepton just has to be a denom (F0).  Hyp_class = 6 is useful for quickly finding a sample pure in WZ.  The "lep3_*" variables in this case are the leptons that would cause the veto!!!
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+hyp_class = 3 is used to estimate the WZ background (since the analysis has the third lepton veto).  There are three ways a third lepton from WZ:
+1) it isn't a FO
+2) it is out of the detector acceptance
+3) the mother Z is off-shell
+
+Since these babies weren't made with this study in mind, the branches available weren't really conducive for this study.  I had to get a little creative.  For example, we don't know which lepton causes the veto for hyp_class = 3.  So you have to try to figure it out from the genps branches.  Here is my basic logic:
+
+1) find which the idx of the SS leptons in the genps vectors by looping through the genps_p4 vector and finding the element that minimizes the p4 between the element and the lep1_reco_p4 (could probably use lep1_gen_p4).  I plot this deltaR, and it looks good.
+
+2) Figure out which of the two SS leptons is from a Z.
+
+3) Loop through the genps_id vector and find other leptons from Z's (looping through genps_motherID vector) that form OSSF pairs with the known lepton from a Z.  The lepton candidiate that minimizes DeltaR between the mother Z p4 and the sum of the known lepton and other lepton candidate p4's is called the other lepton.  This is hopefully the third prompt lepton from WZ.  I plot the deltaR here.  It is ok.  Most events look good, but some are bad.  A cut should probably be added.
+
+4) Check to see if that other lepton skirts the third lepton veto b/c it's not a FO, it's out of acceptance, or the Z is off-shell.
+
+
+
+* Notice that most event's have a negative SR.  This means most are failing some combination of the njets, met, and ht cuts.
+
+** In the latest version of the babies (v1.20) it looks like all the hyp_class = 6 events have the third lepton being the same sign as the SS pair!!!  Alex thinks the bug just flips the charge of the third lepton and that each event is still good.  He thinks he fixed for the later versions, but check on this.  You can just do a 
+
+t->Scan("lep1_id:lep2_id:lep3_id","hyp_class == 6")
+
+from the terminal.

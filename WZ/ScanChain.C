@@ -1,0 +1,332 @@
+// Usage:
+// > root -b doAll.C
+
+// C++
+#include <iostream>
+#include <iomanip>
+#include <vector>
+
+// ROOT
+#include "TBenchmark.h"
+#include "TChain.h"
+#include "TDirectory.h"
+#include "TFile.h"
+#include "TROOT.h"
+#include "TTreeCache.h"
+#include "TH2D.h"
+#include "TH1F.h"
+#include "TCanvas.h"
+#include "TStyle.h"
+#include "TLegend.h"
+#include "TColor.h"
+#include "TString.h"
+#include "Math/VectorUtil.h"
+
+#include "./CORE/SSSelections.h"
+
+// lepfilter
+#include "lepfilter.cc"
+
+using namespace std;
+using namespace samesign;
+
+unsigned int matching_by_DeltaR( LorentzVector reco_p4, vector <LorentzVector> gen_p4_vec)
+{
+  unsigned int matched_idx = 9999;
+  float deltaR = 9999.;
+  for(unsigned int i=0; i < gen_p4_vec.size(); i++)
+	{
+	  if( ROOT::Math::VectorUtil::DeltaR(reco_p4, gen_p4_vec[i]) < deltaR)
+		{
+		  deltaR = ROOT::Math::VectorUtil::DeltaR(reco_p4, gen_p4_vec[i]);
+		  matched_idx = i;
+		} 
+	}
+  if(matched_idx > gen_p4_vec.size()-1) cout << "matched_idx = " << matched_idx << " . Out of range!" << endl;
+  return matched_idx;
+}
+
+unsigned int matching_by_p4( LorentzVector gen_p4, vector <LorentzVector> gen_p4_vec)  //not a good way to match
+{
+  unsigned int matched_idx = 9999;
+  for(unsigned int i=0; i < gen_p4_vec.size(); i++)
+	{
+	  if( fabs(gen_p4.pt() - gen_p4_vec[i].pt()) < 0.01 )  matched_idx = i; 
+	}
+  if(matched_idx > gen_p4_vec.size()-1) cout << "matched_idx = " << matched_idx << " . Out of range!" << endl;
+  return matched_idx;
+}
+
+unsigned int other_lep_from_Z(unsigned int known_idx, vector <int> id_vec_gen, vector <LorentzVector> p4_vec_gen, vector <int> id_mother_vec_gen, TH1F *histo, float weight)
+{
+  unsigned int unknown_idx = 9999;
+  unsigned int Z_idx = 9999;
+  float minDeltaR = 9999.;
+  for( unsigned int i = 0; i < id_mother_vec_gen.size(); i++)
+	{
+	  if(id_mother_vec_gen.at(i) == 23  &&  known_idx != i  &&  id_vec_gen.at(known_idx)==-1*id_vec_gen.at(i)) //find a OSSF lepton from Z that isn't the one from the SS pair.
+		{
+		  for(unsigned int j = 0; j < id_vec_gen.size(); j++)  //find all Z's
+			{
+			  if(id_vec_gen.at(j) == 23 && ROOT::Math::VectorUtil::DeltaR(p4_vec_gen.at(j), p4_vec_gen.at(known_idx)+p4_vec_gen.at(i)) < minDeltaR)
+				{
+				  unknown_idx = i;
+				  Z_idx = j;
+				  minDeltaR = ROOT::Math::VectorUtil::DeltaR(p4_vec_gen.at(j), p4_vec_gen.at(known_idx)+p4_vec_gen.at(i));
+				}
+			}
+		}
+	}
+  //cout << "unknown idx: " << unknown_idx << ". Z idx: " << Z_idx << ". DeltaR: " << minDeltaR << endl;
+  if(unknown_idx > p4_vec_gen.size()-1) cout << "unknown_idx = " << unknown_idx << " . Out of range!" << endl;
+  if(minDeltaR > 0.1) cout<<"Uh oh. DeltaR = " << minDeltaR << ". Might want to add a DeltaCut.  Look at plot" << endl;
+  // //put in a deltaR cut here
+  histo->Fill(minDeltaR, weight);
+  return unknown_idx;
+}
+
+int ScanChain( TChain* chain, bool fast = true, int nEvents = -1, string skimFilePrefix = "test") {
+
+  // Benchmark
+  TBenchmark *bmark = new TBenchmark();
+  bmark->Start("benchmark");
+
+  // Example Histograms
+  TDirectory *rootdir = gDirectory->GetDirectory("Rint:");
+
+  TH1F *njets_histo = new TH1F("njets_histo", "Hyp 6 Njets Distribution", 5,0,5);
+  njets_histo->SetDirectory(rootdir);
+
+  TH1F *lep3_pt_histo6 = new TH1F("lep3_pt_histo6", "Third Lepton pT Distribution Hyp 6", 50,0,100);
+  lep3_pt_histo6->SetDirectory(rootdir);
+
+  TH1F *lep3_pt_histo3 = new TH1F("lep3_pt_histo3", "Third Lepton pT Distribution Hyp 3", 50,0,100);
+  lep3_pt_histo3->SetDirectory(rootdir);
+
+  TH1F *other_lep_pt_histo = new TH1F("other_lep_pt_histo", "Other Lepton from Z pT Distribution", 50,0,100);
+  other_lep_pt_histo->SetDirectory(rootdir);
+
+  TH1F *deltaR_histo = new TH1F("deltaR_histo", "DeltaR of Matched p4's (SS Leps)", 100,0,0.1);
+  deltaR_histo->SetDirectory(rootdir);
+
+  TH1F *deltaR_histo2 = new TH1F("deltaR_histo2", "DeltaR of Z and Daughter Leps", 100,0,5);
+  deltaR_histo2->SetDirectory(rootdir);
+
+  TH1F *SR_histo = new TH1F("SR_histo", "Number of WZ Events after Z veto per SR", 41,-1,40);
+  SR_histo->SetDirectory(rootdir);
+
+  //-------------------------
+  float counter3 = 0;
+  float counter6 = 0;
+  float counter_notFO = 0;
+  float counter_outsideAcceptance = 0;
+  float counter_outsideZWindow = 0;
+  float ZWindowCut = 15.;
+  //-------------------------
+
+  // Loop over events to Analyze
+  unsigned int nEventsTotal = 0;
+  unsigned int nEventsChain = chain->GetEntries();
+  if( nEvents >= 0 ) nEventsChain = nEvents;
+  TObjArray *listOfFiles = chain->GetListOfFiles();
+  TIter fileIter(listOfFiles);
+  TFile *currentFile = 0;
+
+  // File Loop
+  while ( (currentFile = (TFile*)fileIter.Next()) ) {
+
+    // Get File Content
+    TFile *file = new TFile( currentFile->GetTitle() );
+    TTree *tree = (TTree*)file->Get("t");
+    if(fast) TTreeCache::SetLearnEntries(10);
+    if(fast) tree->SetCacheSize(128*1024*1024);
+    ss.Init(tree);
+    
+    // Loop over Events in current file
+    if( nEventsTotal >= nEventsChain ) continue;
+    unsigned int nEventsTree = tree->GetEntriesFast();
+    for( unsigned int event = 0; event < nEventsTree; ++event) {
+    
+      // Get Event Content
+      if( nEventsTotal >= nEventsChain ) continue;
+      if(fast) tree->LoadTree(event);
+      ss.GetEntry(event);
+      ++nEventsTotal;
+    
+      // Progress
+      lepfilter::progress( nEventsTotal, nEventsChain );
+
+      // Analysis Code
+	  float weight = ss.scale1fb()*10.0;
+
+	  // if( fabs(ss.lep1_p4().eta()) > 2.4 || fabs(ss.lep2_p4().eta()) > 2.4)  //eta cuts are built in (at veto level?)
+	  // 	{continue;}
+
+	  //if( !(ss.njets() >= 2 && (ss.ht() > 500 ? 1 : ss.met() > 30) ) ) continue; //don't need.  Covered by baselineRegion cuts
+	  // if( !(ss.njets() >= 2 || (ss.ht() > 500 ? 1 : ss.met() > 30) ) ) cout << "fails njet AND ht/met cut." << endl;
+	  // else if( !(ss.njets() >= 2)) cout << "fails njets cut." << endl;
+	  // else if( !((ss.ht() > 500 ? 1 : ss.met() > 30) ) ) cout << "fails ht/met cut."<<endl;
+	  //------------------------------------------------------------------------
+	  float mtmin = ss.mt() > ss.mt_l2() ? ss.mt_l2() : ss.mt();
+	  anal_type_t ac_base = analysisCategory(ss.lep1_p4().pt(), lep2_p4().pt());//fixme use this as selection
+	  int br = baselineRegion(ss.njets(), ss.nbtags(), ss.met(), ss.ht(), ss.lep1_p4().pt(), ss.lep2_p4().pt());
+	  //if (br<0) continue;                                                                                               // <-- want this?
+	  //if (debug) cout << "ac_base=" << ac_base << " ac_sig=" << ac_sig << endl;
+	  int sr = signalRegion(ss.njets(), ss.nbtags(), ss.met(), ss.ht(), mtmin, ss.lep1_p4().pt(), ss.lep2_p4().pt());
+	  //if (sr<=0) continue;                                                                                              // <-- want this? 
+	  //------------------------------------------------------------------------
+
+	  //------------------------------------------------------------------------------------------------------------------------------------------//
+	  //------------------------------------------------------------------------------------------------------------------------------------------//
+	  //------------------------------------------------------------------------------------------------------------------------------------------//
+	  if(ss.hyp_class() == 6)  //third lepton causes Z veto.  Think it just has to be a denom lepton...
+	  	{
+		  //paranoid cuts...
+	  	  //Make sure reco and gen id match
+	  	  if( (ss.lep1_id_gen() != ss.lep1_id()) || (ss.lep2_id_gen() != ss.lep2_id())) continue;
+	  	  //make sure SS pair
+	  	  if( ss.lep1_id()*ss.lep2_id() < 0) continue;
+		  //make sure lep3 forms OSSF pair on Z mass with SS lepton from Z
+	  	  int lep1_idx_gen = matching_by_DeltaR(ss.lep1_p4(), ss.genps_p4());
+	  	  int lep2_idx_gen = matching_by_DeltaR(ss.lep2_p4(), ss.genps_p4());
+		  deltaR_histo->Fill( ROOT::Math::VectorUtil::DeltaR(ss.lep1_p4(), ss.genps_p4().at(lep1_idx_gen)), weight ); //make sure matching well
+		  deltaR_histo->Fill( ROOT::Math::VectorUtil::DeltaR(ss.lep2_p4(), ss.genps_p4().at(lep2_idx_gen)), weight );  //make sure matching well		  
+	  	  if( ss.genps_id_mother().at(lep1_idx_gen) == 23 && abs(ss.genps_id_mother().at(lep2_idx_gen)) == 24) //lep1 from Z, lep2 from W
+			{
+			  if( (ss.lep1_id()!=-1*ss.lep3_id()) || (fabs((ss.lep1_p4()+ss.lep3_p4()).M() - 91.) > ZWindowCut) ) continue;  //this cut shouldn't do anything, but it does
+			  counter6 += weight;
+			  njets_histo->Fill(ss.njets(), weight);
+			  lep3_pt_histo6->Fill(ss.lep3_p4().pt(), weight);
+			}
+	  	  else if( ss.genps_id_mother().at(lep2_idx_gen) == 23 && abs(ss.genps_id_mother().at(lep1_idx_gen)) == 24) //lep2 from Z, lep1 from W
+			{
+			  if( (ss.lep2_id()!=-1*ss.lep3_id()) || (fabs((ss.lep2_p4()+ss.lep3_p4()).M() - 91.) > ZWindowCut) ) continue;  //this cut shouldn't do anything, but it does
+			  counter6 += weight;
+			  njets_histo->Fill(ss.njets(), weight);
+			  lep3_pt_histo6->Fill(ss.lep3_p4().pt(), weight);
+			}
+		}
+	  //------------------------------------------------------------------------------------------------------------------------------------------//
+	  //------------------------------------------------------------------------------------------------------------------------------------------//
+	  //------------------------------------------------------------------------------------------------------------------------------------------//
+	  if(ss.hyp_class() == 3)  //third lepton Z veto in place.  Can beat it three ways. It's not a FO, it's out of acceptance, or the Z is off-shell.
+	  	{
+	  	  counter3 += weight;
+	  	  lep3_pt_histo3->Fill(ss.lep3_p4().pt(), weight);  //don't know which lepton this is! third highest pT?
+	  	  //if(ss.lep3_p4().pt() > 0.) lep3_pt_histo3->Fill(ss.lep3_p4().pt(), weight);
+	
+	  	  // //figure out the gen idx for each SS lep
+	  	  int lep1_idx_gen = matching_by_DeltaR(ss.lep1_p4(), ss.genps_p4());
+	  	  int lep2_idx_gen = matching_by_DeltaR(ss.lep2_p4(), ss.genps_p4());
+		  deltaR_histo->Fill( ROOT::Math::VectorUtil::DeltaR(ss.lep1_p4(), ss.genps_p4().at(lep1_idx_gen)), weight );  //make sure matching well
+		  deltaR_histo->Fill( ROOT::Math::VectorUtil::DeltaR(ss.lep2_p4(), ss.genps_p4().at(lep2_idx_gen)), weight );  //make sure matching well
+	  	  //Make sure reco and gen id match
+	  	  if( (ss.lep1_id_gen() != ss.lep1_id()) || (ss.lep2_id_gen() != ss.lep2_id())) continue;
+	  	  //make sure SS pair
+	  	  if( ss.lep1_id()*ss.lep2_id() < 0) continue;
+	  	  //find out which is from Z
+	  	  if( ss.genps_id_mother().at(lep1_idx_gen) == 23 && abs(ss.genps_id_mother().at(lep2_idx_gen)) == 24) //lep1 from Z, lep2 from W
+	  		{
+	  		  unsigned int other_lep_idx_gen = other_lep_from_Z( lep1_idx_gen, ss.genps_id(), ss.genps_p4(), ss.genps_id_mother(), deltaR_histo2, weight);
+	  		  int other_lep_id_gen = ss.genps_id().at(other_lep_idx_gen);
+	  		  LorentzVector other_lep_p4_gen = ss.genps_p4().at(other_lep_idx_gen);
+	  		  //make sure OS SF pair
+			  // if( ss.lep1_id() != -1*other_lep_id_gen ) continue;  //put into other_lep_from_Z function, shouldn't do anything
+			  other_lep_pt_histo->Fill(other_lep_p4_gen.pt(), weight);
+			  SR_histo->Fill(sr, weight);
+	  		  //if on Z window.
+	  		  if( abs((ss.lep1_p4() + other_lep_p4_gen).M() - 91.) < ZWindowCut )  //should I use gen or reco p4 for lep1?
+	  			{
+	  			  if( other_lep_p4_gen.eta() > 2.4 || (other_lep_p4_gen.eta()>1.44 && other_lep_p4_gen.eta()<1.57))  counter_outsideAcceptance += weight;  
+	  			  else      counter_notFO += weight;
+	  			}
+	  		  else	  		counter_outsideZWindow += weight;
+	  		}
+
+	  	  else if( ss.genps_id_mother().at(lep2_idx_gen) == 23 && abs(ss.genps_id_mother().at(lep1_idx_gen)) == 24) //lep1 from Z, lep2 from W
+	  		{
+	  		  unsigned int other_lep_idx_gen = other_lep_from_Z( lep2_idx_gen, ss.genps_id(), ss.genps_p4(), ss.genps_id_mother(), deltaR_histo2, weight);
+	  		  int other_lep_id_gen = ss.genps_id().at(other_lep_idx_gen);
+	  		  LorentzVector other_lep_p4_gen = ss.genps_p4().at(other_lep_idx_gen);
+	  		  //make sure OS SF pair
+	  		  //if( ss.lep2_id() != -1*other_lep_id_gen ) continue;  //put into other_lep_from_Z function, shouldn't do anything
+			  other_lep_pt_histo->Fill(other_lep_p4_gen.pt(), weight);
+	  		  SR_histo->Fill(sr, weight);
+			  //if on Z window.
+	  		  if( abs((ss.lep2_p4() + other_lep_p4_gen).M() - 91.) < ZWindowCut )  //should I use gen or reco p4 for lep2
+	  			{
+	  			  if( other_lep_p4_gen.eta() > 2.4  || (other_lep_p4_gen.eta()>1.44 && other_lep_p4_gen.eta()<1.57))  counter_outsideAcceptance += weight; 
+				  else	    counter_notFO += weight;
+	  			}
+	  		  else	  	    counter_outsideZWindow += weight;
+			}
+	  	}
+	  
+    }
+	
+    // Clean Up
+    delete tree;
+    file->Close();
+    delete file;
+  }
+  if ( nEventsChain != nEventsTotal ) {
+    cout << Form( "ERROR: number of events from files (%d) is not equal to total number of events (%d)", nEventsChain, nEventsTotal ) << endl;
+  }
+  
+  // Example Histograms
+  TCanvas *c1=new TCanvas("c1","Njets Distribution",800,800);
+  c1->cd();  
+  njets_histo->GetXaxis()->SetTitle("Njets");
+  njets_histo->Draw();
+
+  TCanvas *c2=new TCanvas("c2","lep3 pt distribution 6",800,800);
+  c2->cd();  
+  lep3_pt_histo6->GetXaxis()->SetTitle("pT");
+  lep3_pt_histo6->Draw();
+  
+  TCanvas *c3=new TCanvas("c3","lep3 pt distribution 3",800,800);
+  c3->cd();  
+  lep3_pt_histo3->GetXaxis()->SetTitle("pT");
+  lep3_pt_histo3->Draw();
+
+  TCanvas *c4=new TCanvas("c4","deltaR",800,800);
+  c4->cd();
+  c4->SetLogy();
+  deltaR_histo->GetXaxis()->SetTitle("DeltaR");
+  deltaR_histo->Draw();
+
+  TCanvas *c5=new TCanvas("c5","Other Lepton  pT Distribution",800,800);
+  c5->cd();
+  other_lep_pt_histo->GetXaxis()->SetTitle("pT");
+  other_lep_pt_histo->Draw();
+
+  TCanvas *c6=new TCanvas("c6","deltaR of Z and Leps",800,800);
+  c6->cd();  
+  c6->SetLogy();
+  deltaR_histo2->GetXaxis()->SetTitle("DeltaR");
+  deltaR_histo2->Draw();
+
+  TCanvas *c7=new TCanvas("c7","Number of WZ Events with Z Veto per SR",800,800);
+  c7->cd();
+  SR_histo->GetXaxis()->SetTitle("SR");
+  SR_histo->Draw();
+
+  cout<<"\n"<<counter6<<" hyp_class == 6 events (SS hyp with inverted Z veto)"<<endl;
+  cout<<counter3<<" hyp_class == 3 events (SS hyp)"<<endl;
+
+  cout << "\n" << setw(20) << "Not a FO: " << setw(10) << counter_notFO << endl;
+  cout << setw(20) << "Outside Acceptance: " << setw(10) << counter_outsideAcceptance << endl;
+  cout << setw(20) << "Outside Z Window: " << setw(10) << counter_outsideZWindow << endl;
+  cout << "\nRest of hyp_class == 3 events don't pass SS (first two leps), OS SF (third lep), reco id = gen id (first two leps), or DeltaR (Z to 2 leps) cuts" << endl;
+
+  // return
+  bmark->Stop("benchmark");
+  cout << endl;
+  cout << nEventsTotal << " Events Processed" << endl;
+  cout << "------------------------------" << endl;
+  cout << "CPU  Time:	" << Form( "%.01f", bmark->GetCpuTime("benchmark")  ) << endl;
+  cout << "Real Time:	" << Form( "%.01f", bmark->GetRealTime("benchmark") ) << endl;
+  cout << endl;
+  delete bmark;
+  return 0;
+}
