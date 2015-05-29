@@ -1,0 +1,8 @@
+#! /bin/bash
+
+directory=/hadoop/cms/store/user/cwelke/correctedMET_data/WZJetsTo3LNu_TuneZ2_8TeV-madgraph-tauola_Summer12_DR53X-PU_S10_START53_V7A-v1_AODSIM/
+
+for i in $directory*.root; do 
+	outfile=`basename $i`
+	root -b -q "GetCorrections.cc+(\"$i\", \"$outfile\")";
+done

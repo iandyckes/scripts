@@ -1,0 +1,14 @@
+#include "TROOT.h"
+#include "TSystem.h"
+//#include "ScanChain.h"
+
+void doAllTEST(string dirname, string base)
+{
+
+  gSystem->AddIncludePath(" -I./");
+  gROOT->ProcessLine(".L ScanTEST.cc++");
+  miniBabyMaker looper(dirname, base);
+  looper.ScanChainTEST(dirname);
+
+  return;
+}
